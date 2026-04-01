@@ -2,7 +2,7 @@
 
 Зависимости---
 
-pip install pytest psycopg2-binary
+sudo dnf install python3-psycopg2
 
 Перед запуском теста сервис должен быть запущен вручную
 
