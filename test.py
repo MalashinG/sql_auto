@@ -29,16 +29,25 @@ def _detect() -> dict:
     for line in out.splitlines():
         m = re.match(r"(postgresql(\d+)(st)?-server)\t(\d+\.\d+)", line)
         if m:
-            pkg_name, major, suffix, pkg_ver = (
-                m.group(1), m.group(2), m.group(3) or "", m.group(4)
-            )
-            return {
-                "pkg_name": pkg_name,
-                "pkg_ver":  pkg_ver,
-                "major":    major,
-                "service":  f"postgresql{major}{suffix}",
-                "bin_dir":  f"/usr/lib/postgresql{major}{suffix}/bin",
-            }
+            pkg_name = m.group(1)
+            major    = m.group(2)
+            suffix   = m.group(3) or ""
+            pkg_ver  = m.group(4)
+
+            # Проверяем оба варианта имени сервиса
+            for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
+                r = subprocess.run(
+                    ["systemctl", "cat", svc],
+                    capture_output=True
+                )
+                if r.returncode == 0:
+                    return {
+                        "pkg_name": pkg_name,
+                        "pkg_ver":  pkg_ver,
+                        "major":    major,
+                        "service":  svc,
+                        "bin_dir": f"/usr/libexec/postgresql{major}",
+                    }
 
     pytest.exit(
         "Пакет postgresql*-server не найден.\n"
@@ -233,6 +242,15 @@ class TestSQL:
         print(f"\n INSERT ('hello', 42)")
         print(f" SELECT вернул: {row}")
         assert row == ("hello", 42)
+
+    def test_socket_path_correct(self):
+        """Unix-сокет PostgreSQL находится в /var/run/postgresql"""
+        result = run([
+            pg_bin("psql"), "-U", "postgres",
+            "-c", "SHOW unix_socket_directories;"
+        ])
+        print(f"\n{result.stdout.strip()}")
+        assert "/var/run/postgresql" in result.stdout
 
     def test_update(self, tmp_table):
         """UPDATE изменяет значение записи."""
