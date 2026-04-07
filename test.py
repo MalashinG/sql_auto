@@ -34,10 +34,10 @@ def _detect() -> dict:
             suffix   = m.group(3) or ""
             pkg_ver  = m.group(4)
 
-            # Проверяем оба варианта имени сервиса
+            # выбираем только ту версию PG которая is-active
             for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
                 r = subprocess.run(
-                    ["systemctl", "cat", svc],
+                    ["systemctl", "is-active", "--quiet", svc],
                     capture_output=True
                 )
                 if r.returncode == 0:
