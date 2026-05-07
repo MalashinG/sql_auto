@@ -24,12 +24,9 @@ cd sql_auto
 sudo dnf install python3-pytest python3-psycopg2
 ```
 
-Перед запуском теста сервис должен быть запущен вручную
-```bash
-sudo systemctl start postgresql<версия> 
-```
 ## Запуск теста
 ```bash
-pytest test.py -v
-pytest test.py -v -s # подробный вывод
+Скрипт автоматически перебирает версии postgresql 15, 16, 17, 18 — 
+устанавливает каждую, запускает тесты и удаляет.
+sudo ./version.sh
 ```
