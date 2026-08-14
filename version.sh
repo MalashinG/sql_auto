@@ -31,7 +31,7 @@ for version in "${!services[@]}"; do
         continue
     fi
 
-    pytest test.py -v -s
+    python3 -m pytest test.py -v -s
     sudo systemctl stop ${services[$version]}
 
     sudo dnf erase $version ${pg_profile_pkgs[$version]} -y
