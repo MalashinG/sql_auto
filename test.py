@@ -21,7 +21,7 @@ def _detect() -> dict:
         )
     except FileNotFoundError:
         pytest.exit(
-            "rpm не найден — тест рассчитан на RPM-based дистрибутив (ROSA Linux)"
+            "rpm не найден - тест рассчитан на RPM-based дистрибутив (ROSA Linux)"
         )
 
     for line in out.splitlines():
@@ -193,7 +193,7 @@ class TestVersion:
         assert (
             INFO["pkg_ver"].split(".")[0] in r.stdout
             or "catalog version" in r.stdout.lower()
-        ), "pg_controldata не подтверждает версию — возможно datadir от предыдущей итерации"
+        ), "pg_controldata не подтверждает версию - возможно datadir от предыдущей итерации"
 
 
 class TestService:
@@ -371,7 +371,7 @@ class TestExtensions:
 
         if not dblink_available:
             pytest.fail(
-                "dblink недоступен — обязательная зависимость pg_profile. "
+                "dblink недоступен - обязательная зависимость pg_profile. "
                 "Установите postgresqlXX-contrib."
             )
 
