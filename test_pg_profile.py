@@ -26,7 +26,8 @@ def _detect():
     try:
         out = subprocess.check_output(
             ["rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}\n"],
-            text=True, stderr=subprocess.DEVNULL,
+            text=True,
+            stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         pytest.exit("rpm не найден")
@@ -35,7 +36,12 @@ def _detect():
         m = re.match(r"(postgresql(\d+)(st)?-server)\t(\d+\.\d+)", line)
         if not m:
             continue
-        pkg_name, major, suffix, pkg_ver = m.group(1), m.group(2), m.group(3) or "", m.group(4)
+        pkg_name, major, suffix, pkg_ver = (
+            m.group(1),
+            m.group(2),
+            m.group(3) or "",
+            m.group(4),
+        )
         for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
             if run(["systemctl", "is-active", "--quiet", svc]).returncode == 0:
                 return {
@@ -50,8 +56,8 @@ def _detect():
 
 
 INFO = _detect()
-ADDON_PKG = INFO["pkg_name"][:-len("-server")] + "-pg_profile"
-DEVEL_PKG = INFO["pkg_name"][:-len("-server")] + "-devel"
+ADDON_PKG = INFO["pkg_name"][: -len("-server")] + "-pg_profile"
+DEVEL_PKG = INFO["pkg_name"][: -len("-server")] + "-devel"
 
 
 def pg_bin(name):
@@ -73,7 +79,13 @@ def wait_pg(timeout=30):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            c = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME, connect_timeout=2)
+            c = psycopg2.connect(
+                host=PG_HOST,
+                port=PG_PORT,
+                user=PG_USER,
+                dbname=PG_DBNAME,
+                connect_timeout=2,
+            )
             c.close()
             return True
         except psycopg2.OperationalError:
@@ -128,7 +140,11 @@ class TestPackage:
 
     def test_sql_scripts(self):
         r = run(["rpm", "-ql", ADDON_PKG])
-        scripts = [l for l in r.stdout.splitlines() if os.path.basename(l).startswith("pg_profile--")]
+        scripts = [
+            l
+            for l in r.stdout.splitlines()
+            if os.path.basename(l).startswith("pg_profile--")
+        ]
         print(f"\n  {len(scripts)} шт.")
         assert scripts
 
@@ -160,7 +176,9 @@ class TestExtension:
 
     def test_create(self, extension):
         with extension.cursor() as cur:
-            cur.execute("SELECT extname, extnamespace::regnamespace FROM pg_extension WHERE extname = 'pg_profile'")
+            cur.execute(
+                "SELECT extname, extnamespace::regnamespace FROM pg_extension WHERE extname = 'pg_profile'"
+            )
             row = cur.fetchone()
         print(f"\n  {row}")
         assert row is not None
@@ -169,14 +187,18 @@ class TestExtension:
     def test_version_matches_rpm(self, extension):
         pkg_ver = run(["rpm", "-q", "--qf", "%{VERSION}", ADDON_PKG]).stdout.strip()
         with extension.cursor() as cur:
-            cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'pg_profile'")
+            cur.execute(
+                "SELECT extversion FROM pg_extension WHERE extname = 'pg_profile'"
+            )
             ext_ver = cur.fetchone()[0]
         print(f"\n  rpm={pkg_ver} ext={ext_ver}")
         assert ext_ver == pkg_ver
 
     def test_schema_exists(self, extension):
         with extension.cursor() as cur:
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'profile')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'profile')"
+            )
             exists = cur.fetchone()[0]
         print(f"\n  {exists}")
         assert exists is True
@@ -191,7 +213,9 @@ class TestExtension:
             """)
             found = {r[0] for r in cur.fetchall()}
         print(f"\n  {found}")
-        assert {"take_sample", "get_report", "show_samples", "show_servers"}.issubset(found)
+        assert {"take_sample", "get_report", "show_samples", "show_servers"}.issubset(
+            found
+        )
 
     def test_local_server(self, extension):
         with extension.cursor() as cur:
@@ -228,7 +252,9 @@ class TestFunctionality:
             cur.execute("SELECT profile.get_report(%s, %s)", (start_id, end_id))
             report = cur.fetchone()[0]
 
-        path = save_report(f"sections_{start_id}_{end_id}_pg{INFO['major']}.html", report)
+        path = save_report(
+            f"sections_{start_id}_{end_id}_pg{INFO['major']}.html", report
+        )
         print(f"\n  {path}")
 
         assert '"local"' in report
@@ -248,7 +274,9 @@ class TestFunctionality:
     def test_cleanup(self, conn, extension):
         with conn.cursor() as cur:
             cur.execute("DROP SCHEMA profile CASCADE")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'profile')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'profile')"
+            )
             exists = cur.fetchone()[0]
         print(f"\n  осталась: {exists}")
         assert exists is False
