@@ -88,7 +88,7 @@ for version in "${!services[@]}"; do
     if want cron || want kcache || want system_stats || want wait_sampling; then
         sudo systemctl stop $svc
 
-        declare -A seen_libs
+        declare -A seen_libs=()
         libs=""
         add_lib() {
             if [ -z "${seen_libs[$1]}" ]; then
