@@ -6,7 +6,9 @@
 #./version.sh kcache  test_pg_stat_kcache.py
 #./version.sh system_stats  test_system_stats.py
 #./version.sh wait_sampling  test_pg_wait_sampling.py
-# ./version.sh profile cron kcache system_stats  - всё сразу 
+#./version.sh test_pgaudit.py
+#./version.sh test_pgauditlogtofile.py
+# ./version.sh profile cron kcache system_stats wait_sampling  - всё сразу 
 
 SUITES=("$@")
 
@@ -50,6 +52,19 @@ pkgs_wait_sampling["postgresql16-server"]="postgresql16-pg_wait_sampling"
 pkgs_wait_sampling["postgresql17-server"]="postgresql17-pg_wait_sampling"
 pkgs_wait_sampling["postgresql18-server"]="postgresql18-pg_wait_sampling"
 
+declare -A pkgs_pgaudit
+pkgs_pgaudit["postgresql15st-server"]="postgresql15st-pgaudit"
+pkgs_pgaudit["postgresql16-server"]="postgresql16-pgaudit"
+pkgs_pgaudit["postgresql17-server"]="postgresql17-pgaudit"
+pkgs_pgaudit["postgresql18-server"]="postgresql18-pgaudit"
+
+
+declare -A pkgs_pgauditlogtofile
+pkgs_pgauditlogtofile["postgresql15st-server"]="postgresql15st-pgauditlogtofile postgresql15st-pgaudit"
+pkgs_pgauditlogtofile["postgresql16-server"]="postgresql16-pgauditlogtofile postgresql16-pgaudit"
+pkgs_pgauditlogtofile["postgresql17-server"]="postgresql17-pgauditlogtofile postgresql17-pgaudit"
+pkgs_pgauditlogtofile["postgresql18-server"]="postgresql18-pgauditlogtofile postgresql18-pgaudit"
+
 for version in "${!services[@]}"; do
     svc=${services[$version]}
     data_dir="/var/lib/${svc}/data"
@@ -60,6 +75,8 @@ for version in "${!services[@]}"; do
     want kcache && extra="$extra ${pkgs_kcache[$version]}"
     want system_stats && extra="$extra ${pkgs_system_stats[$version]}"
     want wait_sampling && extra="$extra ${pkgs_wait_sampling[$version]}"
+    want pgaudit && extra="$extra ${pkgs_pgaudit[$version]}"
+    want pgauditlogtofile && extra="$extra ${pkgs_pgauditlogtofile[$version]}"
 
     sudo dnf install $version -y
     if [ $? -ne 0 ]; then
@@ -86,7 +103,7 @@ for version in "${!services[@]}"; do
         continue
     fi
 
-    if want cron || want kcache || want system_stats || want wait_sampling; then
+    if want cron || want kcache || want system_stats || want wait_sampling || want pgaudit || want pgauditlogtofile; then
         sudo systemctl stop $svc
 
         declare -A seen_libs=()
@@ -97,6 +114,10 @@ for version in "${!services[@]}"; do
                 libs="${libs:+$libs,}$1"
             fi
         }
+
+
+        { want pgaudit || want pgauditlogtofile; } && add_lib pgaudit
+        want pgauditlogtofile && add_lib pgauditlogtofile
         want kcache && { add_lib pg_stat_statements; add_lib pg_stat_kcache; }
         want wait_sampling && { add_lib pg_stat_statements; add_lib pg_wait_sampling; }
         want cron && add_lib pg_cron
@@ -120,6 +141,8 @@ for version in "${!services[@]}"; do
     want kcache && python3 -m pytest test_pg_stat_kcache.py -vv
     want system_stats && python3 -m pytest test_system_stats.py -vv
     want wait_sampling && python3 -m pytest test_pg_wait_sampling.py -vv
+    want pgaudit && python3 -m pytest test_pgaudit.py -vv
+    want pgauditlogtofile && python3 -m pytest test_pgauditlogtofile.py -vv
 
     sudo systemctl stop $svc
     sudo dnf erase $version $extra -y
