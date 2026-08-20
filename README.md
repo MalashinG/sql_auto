@@ -39,9 +39,6 @@ cd sql_auto
 sudo dnf install python3-pytest python3-pip
 python3 -m pip install psycopg2-binary
 ```
-
-На некоторых сборках ROSA пакет `python3-psycopg2` в репозиториях отсутствует или устарел - надёжнее ставить через pip.
-
 ## Запуск
 
 ```bash
