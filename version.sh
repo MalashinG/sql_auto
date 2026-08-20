@@ -15,6 +15,20 @@ SUITES=("$@")
 want() {
     [[ " ${SUITES[*]} " == *" $1 "* ]]
 }
+wait_port_free() {
+    local waited=0
+    local timeout=15
+    while sudo ss -ltn 2>/dev/null | grep -q ':5432 '; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ "$waited" -ge "$timeout" ]; then
+            echo "Порт 5432 занят дольше ${timeout}с - принудительно освобождаю"
+            sudo fuser -k 5432/tcp 2>/dev/null
+            sleep 2
+            break
+        fi
+    done
+}
 
 declare -A services
 services["postgresql15st-server"]="postgresql15"
@@ -58,7 +72,6 @@ pkgs_pgaudit["postgresql16-server"]="postgresql16-pgaudit"
 pkgs_pgaudit["postgresql17-server"]="postgresql17-pgaudit"
 pkgs_pgaudit["postgresql18-server"]="postgresql18-pgaudit"
 
-
 declare -A pkgs_pgauditlogtofile
 pkgs_pgauditlogtofile["postgresql15st-server"]="postgresql15st-pgauditlogtofile postgresql15st-pgaudit"
 pkgs_pgauditlogtofile["postgresql16-server"]="postgresql16-pgauditlogtofile postgresql16-pgaudit"
@@ -77,6 +90,13 @@ for version in "${!services[@]}"; do
     want wait_sampling && extra="$extra ${pkgs_wait_sampling[$version]}"
     want pgaudit && extra="$extra ${pkgs_pgaudit[$version]}"
     want pgauditlogtofile && extra="$extra ${pkgs_pgauditlogtofile[$version]}"
+
+
+    if sudo ss -ltn 2>/dev/null | grep -q ':5432 '; then
+        echo "Порт 5432 уже занят перед началом итерации $version - освобождаю"
+        sudo fuser -k 5432/tcp 2>/dev/null
+        sleep 2
+    fi
 
     sudo dnf install $version -y
     if [ $? -ne 0 ]; then
@@ -105,6 +125,13 @@ for version in "${!services[@]}"; do
 
     if want cron || want kcache || want system_stats || want wait_sampling || want pgaudit || want pgauditlogtofile; then
         sudo systemctl stop $svc
+        wait_port_free
+
+        if [ ! -f "$data_dir/postgresql.conf" ]; then
+            echo "$data_dir/postgresql.conf не создан после первого старта - что-то пошло не так, пропускаю $version"
+            sudo dnf erase $version $extra -y
+            continue
+        fi
 
         declare -A seen_libs=()
         libs=""
@@ -114,8 +141,7 @@ for version in "${!services[@]}"; do
                 libs="${libs:+$libs,}$1"
             fi
         }
-
-
+        # pgaudit должен идти раньше pgauditlogtofile - добавляем первым
         { want pgaudit || want pgauditlogtofile; } && add_lib pgaudit
         want pgauditlogtofile && add_lib pgauditlogtofile
         want kcache && { add_lib pg_stat_statements; add_lib pg_stat_kcache; }
@@ -145,5 +171,6 @@ for version in "${!services[@]}"; do
     want pgauditlogtofile && python3 -m pytest test_pgauditlogtofile.py -vv
 
     sudo systemctl stop $svc
+    wait_port_free
     sudo dnf erase $version $extra -y
 done
