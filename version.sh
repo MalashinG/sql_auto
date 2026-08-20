@@ -5,6 +5,7 @@
 # ./version.sh cron  test_pg_cron.py
 #./version.sh kcache  test_pg_stat_kcache.py
 #./version.sh system_stats  test_system_stats.py
+#./version.sh wait_sampling  test_pg_wait_sampling.py
 # ./version.sh profile cron kcache system_stats  - всё сразу 
 
 SUITES=("$@")
