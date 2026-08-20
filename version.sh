@@ -43,6 +43,12 @@ pkgs_system_stats["postgresql16-server"]="postgresql16-system_stats"
 pkgs_system_stats["postgresql17-server"]="postgresql17-system_stats"
 pkgs_system_stats["postgresql18-server"]="postgresql18-system_stats"
 
+declare -A pkgs_wait_sampling
+pkgs_wait_sampling["postgresql15st-server"]="postgresql15st-pg_wait_sampling"
+pkgs_wait_sampling["postgresql16-server"]="postgresql16-pg_wait_sampling"
+pkgs_wait_sampling["postgresql17-server"]="postgresql17-pg_wait_sampling"
+pkgs_wait_sampling["postgresql18-server"]="postgresql18-pg_wait_sampling"
+
 for version in "${!services[@]}"; do
     svc=${services[$version]}
     data_dir="/var/lib/${svc}/data"
@@ -52,6 +58,7 @@ for version in "${!services[@]}"; do
     want cron && extra="$extra ${pkgs_cron[$version]}"
     want kcache && extra="$extra ${pkgs_kcache[$version]}"
     want system_stats && extra="$extra ${pkgs_system_stats[$version]}"
+    want wait_sampling && extra="$extra ${pkgs_wait_sampling[$version]}"
 
     sudo dnf install $version -y
     if [ $? -ne 0 ]; then
@@ -78,13 +85,21 @@ for version in "${!services[@]}"; do
         continue
     fi
 
-    if want cron || want kcache || want system_stats; then
+    if want cron || want kcache || want system_stats || want wait_sampling; then
         sudo systemctl stop $svc
 
+        declare -A seen_libs
         libs=""
-        want kcache && libs="pg_stat_statements,pg_stat_kcache"
-        want cron && libs="${libs:+$libs,}pg_cron"
-        want system_stats && libs="${libs:+$libs,}system_stats"
+        add_lib() {
+            if [ -z "${seen_libs[$1]}" ]; then
+                seen_libs[$1]=1
+                libs="${libs:+$libs,}$1"
+            fi
+        }
+        want kcache && { add_lib pg_stat_statements; add_lib pg_stat_kcache; }
+        want wait_sampling && { add_lib pg_stat_statements; add_lib pg_wait_sampling; }
+        want cron && add_lib pg_cron
+        want system_stats && add_lib system_stats
 
         sudo sed -i "/^shared_preload_libraries/d; /^#shared_preload_libraries/d" "$data_dir/postgresql.conf"
         echo "shared_preload_libraries = '$libs'" | sudo tee -a "$data_dir/postgresql.conf" > /dev/null
@@ -103,6 +118,7 @@ for version in "${!services[@]}"; do
     want cron && python3 -m pytest test_pg_cron.py -vv
     want kcache && python3 -m pytest test_pg_stat_kcache.py -vv
     want system_stats && python3 -m pytest test_system_stats.py -vv
+    want wait_sampling && python3 -m pytest test_pg_wait_sampling.py -vv
 
     sudo systemctl stop $svc
     sudo dnf erase $version $extra -y
