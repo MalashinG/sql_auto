@@ -1,9 +1,11 @@
 #!/bin/bash
 # Использование:
 #  ./version.sh  - только базовый test.py (быстро, без рестартов)
-# ./version.sh profile  - + test_pg_profile.py
-# ./version.sh cron kcache   - + test_pg_cron.py и test_pg_stat_kcache.py
-# ./version.sh profile cron kcache     - всё сразу
+# ./version.sh profile  test_pg_profile.py
+# ./version.sh cron  test_pg_cron.py
+#./version.sh kcache  test_pg_stat_kcache.py
+#./version.sh system_stats  test_system_stats.py
+# ./version.sh profile cron kcache system_stats  - всё сразу 
 
 SUITES=("$@")
 
