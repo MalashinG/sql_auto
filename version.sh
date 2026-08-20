@@ -35,6 +35,12 @@ pkgs_kcache["postgresql16-server"]="postgresql16-pg_stat_kcache postgresql16-con
 pkgs_kcache["postgresql17-server"]="postgresql17-pg_stat_kcache postgresql17-contrib"
 pkgs_kcache["postgresql18-server"]="postgresql18-pg_stat_kcache postgresql18-contrib"
 
+declare -A pkgs_system_stats
+pkgs_system_stats["postgresql15st-server"]="postgresql15st-system_stats"
+pkgs_system_stats["postgresql16-server"]="postgresql16-system_stats"
+pkgs_system_stats["postgresql17-server"]="postgresql17-system_stats"
+pkgs_system_stats["postgresql18-server"]="postgresql18-system_stats"
+
 for version in "${!services[@]}"; do
     svc=${services[$version]}
     data_dir="/var/lib/${svc}/data"
@@ -43,6 +49,7 @@ for version in "${!services[@]}"; do
     want profile && extra="$extra ${pkgs_profile[$version]}"
     want cron && extra="$extra ${pkgs_cron[$version]}"
     want kcache && extra="$extra ${pkgs_kcache[$version]}"
+    want system_stats && extra="$extra ${pkgs_system_stats[$version]}"
 
     sudo dnf install $version -y
     if [ $? -ne 0 ]; then
@@ -69,12 +76,13 @@ for version in "${!services[@]}"; do
         continue
     fi
 
-    if want cron || want kcache; then
+    if want cron || want kcache || want system_stats; then
         sudo systemctl stop $svc
 
         libs=""
         want kcache && libs="pg_stat_statements,pg_stat_kcache"
         want cron && libs="${libs:+$libs,}pg_cron"
+        want system_stats && libs="${libs:+$libs,}system_stats"
 
         sudo sed -i "/^shared_preload_libraries/d; /^#shared_preload_libraries/d" "$data_dir/postgresql.conf"
         echo "shared_preload_libraries = '$libs'" | sudo tee -a "$data_dir/postgresql.conf" > /dev/null
@@ -92,6 +100,7 @@ for version in "${!services[@]}"; do
     want profile && python3 -m pytest test_pg_profile.py -vv
     want cron && python3 -m pytest test_pg_cron.py -vv
     want kcache && python3 -m pytest test_pg_stat_kcache.py -vv
+    want system_stats && python3 -m pytest test_system_stats.py -vv
 
     sudo systemctl stop $svc
     sudo dnf erase $version $extra -y

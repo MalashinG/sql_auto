@@ -388,9 +388,11 @@ class TestExtensions:
 
 class TestDumpRestore:
 
-    DUMP_PATH = "/tmp/_autotest_dump.sql"
+    DUMP_PATH = f"/tmp/_autotest_dump_{os.getpid()}.sql"
 
     def test_pg_dump_works(self, tmp_table):
+        if os.path.exists(self.DUMP_PATH):
+            os.remove(self.DUMP_PATH)
         r = run(
             [
                 pg_bin("pg_dump"),
