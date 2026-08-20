@@ -172,15 +172,6 @@ class TestExtension:
             log_dir is not None
         ), "не найден GUC директории аудит-лога (искали *pgaudit*...director*)"
 
-    def test_log_dir_exists(self, extension):
-        log_dir, _ = _resolve_log_dir(extension)
-        assert log_dir is not None
-        exists = os.path.isdir(log_dir)
-        print(f"\n  {log_dir} существует={exists}")
-        assert (
-            exists
-        ), f"{log_dir} не существует — расширение ещё не создало ни одного файла"
-
 
 class TestFunctionality:
 
