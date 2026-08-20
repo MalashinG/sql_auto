@@ -95,6 +95,14 @@ def preload_ready(conn):
             "pgaudit не в shared_preload_libraries — добавьте в postgresql.conf "
             "и перезапустите сервер: shared_preload_libraries = 'pgaudit'"
         )
+    if "pgauditlogtofile" in preload:
+        pytest.skip(
+            "pgauditlogtofile тоже загружен — он перехватывает AUDIT-строки и "
+            "уводит их в отдельный файл, поэтому их больше нет в journalctl. "
+            "Это ожидаемое поведение, не баг. Для проверки в такой конфигурации "
+            "используйте test_pgauditlogtofile.py (там метка ищется в файле). "
+            "Чтобы прогнать этот файл — запускайте только 'pgaudit' без 'pgauditlogtofile'."
+        )
 
 
 @pytest.fixture(scope="session")

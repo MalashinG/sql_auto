@@ -8,11 +8,14 @@
 #./version.sh wait_sampling  test_pg_wait_sampling.py
 #./version.sh test_pgaudit.py
 #./version.sh test_pgauditlogtofile.py
-# ./version.sh profile cron kcache system_stats wait_sampling  - всё сразу 
+# ./version.sh all  - все тесты
 
 SUITES=("$@")
 
 want() {
+    if [[ " ${SUITES[*]} " == *" all "* ]]; then
+        return 0
+    fi
     [[ " ${SUITES[*]} " == *" $1 "* ]]
 }
 wait_port_free() {
@@ -22,7 +25,7 @@ wait_port_free() {
         sleep 1
         waited=$((waited + 1))
         if [ "$waited" -ge "$timeout" ]; then
-            echo "Порт 5432 занят дольше ${timeout}с - принудительно освобождаю"
+            echo "Порт 5432 занят дольше ${timeout}с — принудительно освобождаю"
             sudo fuser -k 5432/tcp 2>/dev/null
             sleep 2
             break
@@ -93,7 +96,7 @@ for version in "${!services[@]}"; do
 
 
     if sudo ss -ltn 2>/dev/null | grep -q ':5432 '; then
-        echo "Порт 5432 уже занят перед началом итерации $version - освобождаю"
+        echo "Порт 5432 уже занят перед началом итерации $version — освобождаю"
         sudo fuser -k 5432/tcp 2>/dev/null
         sleep 2
     fi
@@ -128,7 +131,7 @@ for version in "${!services[@]}"; do
         wait_port_free
 
         if [ ! -f "$data_dir/postgresql.conf" ]; then
-            echo "$data_dir/postgresql.conf не создан после первого старта - что-то пошло не так, пропускаю $version"
+            echo "$data_dir/postgresql.conf не создан после первого старта — что-то пошло не так, пропускаю $version"
             sudo dnf erase $version $extra -y
             continue
         fi
@@ -141,7 +144,7 @@ for version in "${!services[@]}"; do
                 libs="${libs:+$libs,}$1"
             fi
         }
-        # pgaudit должен идти раньше pgauditlogtofile - добавляем первым
+
         { want pgaudit || want pgauditlogtofile; } && add_lib pgaudit
         want pgauditlogtofile && add_lib pgauditlogtofile
         want kcache && { add_lib pg_stat_statements; add_lib pg_stat_kcache; }
@@ -169,6 +172,7 @@ for version in "${!services[@]}"; do
     want wait_sampling && python3 -m pytest test_pg_wait_sampling.py -vv
     want pgaudit && python3 -m pytest test_pgaudit.py -vv
     want pgauditlogtofile && python3 -m pytest test_pgauditlogtofile.py -vv
+    want restart && python3 -m pytest test_restart_resilience.py -vv
 
     sudo systemctl stop $svc
     wait_port_free
