@@ -37,7 +37,7 @@ cd sql_auto
 
 ```bash
 sudo dnf install python3-pytest python3-pip
-python3 -m pip install psycopg2-binary
+sudo python3 -m pip install --break-system-packages psycopg2-binary
 ```
 ## Запуск
 
