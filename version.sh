@@ -81,6 +81,33 @@ pkgs_pgauditlogtofile["postgresql16-server"]="postgresql16-pgauditlogtofile post
 pkgs_pgauditlogtofile["postgresql17-server"]="postgresql17-pgauditlogtofile postgresql17-pgaudit"
 pkgs_pgauditlogtofile["postgresql18-server"]="postgresql18-pgauditlogtofile postgresql18-pgaudit"
 
+cleanup() {
+    local version svc data_dir all_pkgs installed
+    echo "Финальная очистка: пакеты и data-каталоги всех версий"
+    for version in "${!services[@]}"; do
+        svc=${services[$version]}
+        data_dir="/var/lib/${svc}/data"
+
+        if systemctl is-active --quiet "$svc"; then
+            sudo systemctl stop "$svc"
+            wait_port_free
+        fi
+
+        all_pkgs="$version ${pkgs_profile[$version]} ${pkgs_cron[$version]} ${pkgs_kcache[$version]} \
+${pkgs_system_stats[$version]} ${pkgs_wait_sampling[$version]} ${pkgs_pgaudit[$version]} \
+${pkgs_pgauditlogtofile[$version]}"
+        installed=$(rpm -q --queryformat '%{NAME}\n' $all_pkgs | grep -v 'is not installed' | sort -u)
+        if [ -n "$installed" ]; then
+            sudo dnf erase $installed -y
+        fi
+
+        if sudo test -d "$data_dir"; then
+            sudo find "${data_dir:?}" -mindepth 1 -delete
+        fi
+    done
+}
+trap cleanup EXIT
+
 for version in "${!services[@]}"; do
     svc=${services[$version]}
     data_dir="/var/lib/${svc}/data"
