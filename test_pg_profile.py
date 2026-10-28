@@ -3,68 +3,15 @@
 """
 
 import os
-import re
-import subprocess
-import time
 
-import psycopg2
 import pytest
 
-PG_HOST = "localhost"
-PG_PORT = 5432
-PG_USER = "postgres"
-PG_DBNAME = "postgres"
+from pg_common import INFO, addon_pkg, find_in_pkg, new_conn, pg_bin, run
 
 REPORTS_DIR = os.environ.get("PG_PROFILE_REPORTS_DIR", "./pg_profile_reports")
 
-
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
-def _detect():
-    try:
-        out = subprocess.check_output(
-            ["rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}\n"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        pytest.exit("rpm не найден")
-
-    for line in out.splitlines():
-        m = re.match(r"(postgresql(\d+)(st)?-server)\t(\d+\.\d+)", line)
-        if not m:
-            continue
-        pkg_name, major, suffix, pkg_ver = (
-            m.group(1),
-            m.group(2),
-            m.group(3) or "",
-            m.group(4),
-        )
-        for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
-            if run(["systemctl", "is-active", "--quiet", svc]).returncode == 0:
-                return {
-                    "pkg_name": pkg_name,
-                    "pkg_ver": pkg_ver,
-                    "major": major,
-                    "service": svc,
-                    "bin_dir": f"/usr/libexec/postgresql{major}",
-                }
-
-    pytest.exit("активный postgresql*-server не найден")
-
-
-INFO = _detect()
-ADDON_PKG = INFO["pkg_name"][: -len("-server")] + "-pg_profile"
-DEVEL_PKG = INFO["pkg_name"][: -len("-server")] + "-devel"
-
-
-def pg_bin(name):
-    for path in [os.path.join(INFO["bin_dir"], name), f"/usr/bin/{name}"]:
-        if os.path.exists(path):
-            return path
-    return name
+ADDON_PKG = addon_pkg("pg_profile")
+DEVEL_PKG = addon_pkg("devel")
 
 
 def save_report(filename, html):
@@ -75,45 +22,7 @@ def save_report(filename, html):
     return path
 
 
-def wait_pg(timeout=30):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            c = psycopg2.connect(
-                host=PG_HOST,
-                port=PG_PORT,
-                user=PG_USER,
-                dbname=PG_DBNAME,
-                connect_timeout=2,
-            )
-            c.close()
-            return True
-        except psycopg2.OperationalError:
-            time.sleep(1)
-    return False
-
-
-def find_in_pkg(pkg, suffix):
-    r = run(["rpm", "-ql", pkg])
-    return next((l for l in r.stdout.splitlines() if l.endswith(suffix)), None)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ensure_service():
-    r = run(["systemctl", "is-active", "--quiet", INFO["service"]])
-    assert r.returncode == 0, f"{INFO['service']} не запущен"
-    assert wait_pg(), "PostgreSQL не отвечает"
-
-
-@pytest.fixture(scope="session")
-def conn(ensure_service):
-    c = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME)
-    c.autocommit = True
-    yield c
-    c.close()
-
-
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def extension(conn):
     with conn.cursor() as cur:
         cur.execute("DROP EXTENSION IF EXISTS pg_profile CASCADE")
@@ -229,12 +138,11 @@ class TestFunctionality:
 
     def test_take_sample(self, extension):
         with extension.cursor() as cur:
-            cur.execute("SELECT result, elapsed FROM profile.take_sample()")
+            cur.execute("SELECT result FROM profile.take_sample()")
             rows = cur.fetchall()
         print(f"\n  {rows}")
         assert rows
-        for result, elapsed in rows:
-            assert result == "OK"
+        assert all(r[0] == "OK" for r in rows), f"take_sample вернул не OK: {rows}"
 
     @pytest.fixture(scope="class")
     def two_samples(self, extension):
@@ -271,12 +179,39 @@ class TestFunctionality:
         print(f"\n  {path}, {len(report) if report else 0} символов")
         assert report and len(report) > 500 and "<html" in report.lower()
 
-    def test_cleanup(self, conn, extension):
+
+class TestCleanup:
+
+    CLEANUP_DB = "_autotest_pg_profile_cleanup"
+
+    def test_drop_schema_removes_extension(self, conn):
+        """Своя отдельная БД, чтобы не ломать фикстуру extension
+        и не зависеть от порядка запуска тестов."""
         with conn.cursor() as cur:
-            cur.execute("DROP SCHEMA profile CASCADE")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'profile')"
-            )
-            exists = cur.fetchone()[0]
-        print(f"\n  осталась: {exists}")
-        assert exists is False
+            cur.execute(f"DROP DATABASE IF EXISTS {self.CLEANUP_DB}")
+            cur.execute(f"CREATE DATABASE {self.CLEANUP_DB}")
+        try:
+            c = new_conn(dbname=self.CLEANUP_DB)
+            try:
+                with c.cursor() as cur:
+                    cur.execute("CREATE EXTENSION dblink")
+                    cur.execute("CREATE SCHEMA profile")
+                    cur.execute("CREATE EXTENSION pg_profile SCHEMA profile")
+                    cur.execute("DROP SCHEMA profile CASCADE")
+                    cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.schemata "
+                        "WHERE schema_name = 'profile')"
+                    )
+                    schema_left = cur.fetchone()[0]
+                    cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_profile')"
+                    )
+                    ext_left = cur.fetchone()[0]
+            finally:
+                c.close()
+            print(f"\n  схема осталась: {schema_left}, extension остался: {ext_left}")
+            assert schema_left is False
+            assert ext_left is False
+        finally:
+            with conn.cursor() as cur:
+                cur.execute(f"DROP DATABASE IF EXISTS {self.CLEANUP_DB}")

@@ -3,107 +3,18 @@
 """
 
 import os
-import re
-import subprocess
 import time
 
-import psycopg2
 import pytest
 
-PG_HOST = "localhost"
-PG_PORT = 5432
-PG_USER = "postgres"
-PG_DBNAME = "postgres"
+from pg_common import addon_pkg, find_in_pkg, require_preload, run
+
+ADDON_PKG = addon_pkg("pg_cron")
 
 
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
-def _detect():
-    try:
-        out = subprocess.check_output(
-            ["rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}\n"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        pytest.exit("rpm не найден")
-
-    for line in out.splitlines():
-        m = re.match(r"(postgresql(\d+)(st)?-server)\t(\d+\.\d+)", line)
-        if not m:
-            continue
-        pkg_name, major, suffix, pkg_ver = (
-            m.group(1),
-            m.group(2),
-            m.group(3) or "",
-            m.group(4),
-        )
-        for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
-            if run(["systemctl", "is-active", "--quiet", svc]).returncode == 0:
-                return {
-                    "pkg_name": pkg_name,
-                    "pkg_ver": pkg_ver,
-                    "major": major,
-                    "service": svc,
-                }
-
-    pytest.exit("активный postgresql*-server не найден")
-
-
-INFO = _detect()
-ADDON_PKG = INFO["pkg_name"][: -len("-server")] + "-pg_cron"
-
-
-def wait_pg(timeout=30):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            c = psycopg2.connect(
-                host=PG_HOST,
-                port=PG_PORT,
-                user=PG_USER,
-                dbname=PG_DBNAME,
-                connect_timeout=2,
-            )
-            c.close()
-            return True
-        except psycopg2.OperationalError:
-            time.sleep(1)
-    return False
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ensure_service():
-    r = run(["systemctl", "is-active", "--quiet", INFO["service"]])
-    assert r.returncode == 0, f"{INFO['service']} не запущен"
-    assert wait_pg(), "PostgreSQL не отвечает"
-
-
-@pytest.fixture(scope="session")
-def conn(ensure_service):
-    c = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME)
-    c.autocommit = True
-    yield c
-    c.close()
-
-
-@pytest.fixture(scope="session", autouse=True)
-def preload_ready(conn):
-    with conn.cursor() as cur:
-        cur.execute("SHOW shared_preload_libraries")
-        preload = cur.fetchone()[0]
-    if "pg_cron" not in preload:
-        pytest.skip(
-            "pg_cron не в shared_preload_libraries -"
-            " добавьте в postgresql.conf "
-            "и перезапустите сервер: shared_preload_libraries = 'pg_cron'"
-        )
-
-
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def extension(conn):
+    require_preload(conn, "pg_cron")
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS pg_cron")
     yield conn
@@ -117,10 +28,7 @@ class TestPackage:
         assert r.returncode == 0
 
     def test_control_file(self):
-        r = run(["rpm", "-ql", ADDON_PKG])
-        path = next(
-            (l for l in r.stdout.splitlines() if l.endswith("pg_cron.control")), None
-        )
+        path = find_in_pkg(ADDON_PKG, "pg_cron.control")
         print(f"\n  {path}")
         assert path and os.path.exists(path)
 
@@ -195,7 +103,7 @@ class TestFunctionality:
                 break
             time.sleep(1)
         print(f"\n  succeeded={succeeded}")
-        assert succeeded, "Job не выполнился за20 секунд"
+        assert succeeded, "Job не выполнился за 20 секунд"
 
     def test_unschedule_removes_job(self, extension):
         with extension.cursor() as cur:

@@ -12,6 +12,17 @@
 
 SUITES=("$@")
 
+
+rc=0
+REPORTS_DIR="${REPORTS_DIR:-./reports}"
+mkdir -p "$REPORTS_DIR"
+
+
+run_suite() {
+    local file=$1
+    python3 -m pytest "$file" -vv --junitxml="$REPORTS_DIR/${svc}_${file%.py}.xml" || rc=1
+}
+
 want() {
     if [[ " ${SUITES[*]} " == *" all "* ]]; then
         return 0
@@ -81,6 +92,7 @@ pkgs_pgauditlogtofile["postgresql16-server"]="postgresql16-pgauditlogtofile post
 pkgs_pgauditlogtofile["postgresql17-server"]="postgresql17-pgauditlogtofile postgresql17-pgaudit"
 pkgs_pgauditlogtofile["postgresql18-server"]="postgresql18-pgauditlogtofile postgresql18-pgaudit"
 
+
 cleanup() {
     local version svc data_dir all_pkgs installed
     echo "Финальная очистка: пакеты и data-каталоги всех версий"
@@ -131,6 +143,7 @@ for version in "${!services[@]}"; do
     sudo dnf install $version -y
     if [ $? -ne 0 ]; then
         echo "Ошибка установки $version!"
+        rc=1
         continue
     fi
 
@@ -141,8 +154,10 @@ for version in "${!services[@]}"; do
         fi
     fi
 
-    if [ -d "$data_dir" ]; then
-        sudo rm -rf "${data_dir:?}"/*
+    # find под sudo, а не rm с glob: glob раскрывает текущий шелл, и без
+    # прав на каталог (700 postgres) он не раскроется - rm ничего не удалит
+    if sudo test -d "$data_dir"; then
+        sudo find "${data_dir:?}" -mindepth 1 -delete
     fi
 
     sudo systemctl start $svc
@@ -150,6 +165,7 @@ for version in "${!services[@]}"; do
         echo "Не удалось запустить $svc"
         sudo journalctl -u $svc --no-pager -n 30
         sudo dnf erase $version $extra -y
+        rc=1
         continue
     fi
 
@@ -160,6 +176,7 @@ for version in "${!services[@]}"; do
         if [ ! -f "$data_dir/postgresql.conf" ]; then
             echo "$data_dir/postgresql.conf не создан после первого старта — что-то пошло не так, пропускаю $version"
             sudo dnf erase $version $extra -y
+            rc=1
             continue
         fi
 
@@ -187,21 +204,24 @@ for version in "${!services[@]}"; do
             echo "Не удалось запустить $svc после правки postgresql.conf"
             sudo journalctl -u $svc --no-pager -n 30
             sudo dnf erase $version $extra -y
+            rc=1
             continue
         fi
     fi
 
-    python3 -m pytest test.py -vv
-    want profile && python3 -m pytest test_pg_profile.py -vv
-    want cron && python3 -m pytest test_pg_cron.py -vv
-    want kcache && python3 -m pytest test_pg_stat_kcache.py -vv
-    want system_stats && python3 -m pytest test_system_stats.py -vv
-    want wait_sampling && python3 -m pytest test_pg_wait_sampling.py -vv
-    want pgaudit && python3 -m pytest test_pgaudit.py -vv
-    want pgauditlogtofile && python3 -m pytest test_pgauditlogtofile.py -vv
-    want restart && python3 -m pytest test_restart_resilience.py -vv
+    run_suite test.py
+    want profile && run_suite test_pg_profile.py
+    want cron && run_suite test_pg_cron.py
+    want kcache && run_suite test_pg_stat_kcache.py
+    want system_stats && run_suite test_system_stats.py
+    want wait_sampling && run_suite test_pg_wait_sampling.py
+    want pgaudit && run_suite test_pgaudit.py
+    want pgauditlogtofile && run_suite test_pgauditlogtofile.py
+    want restart && run_suite test_restart_resilience.py
 
     sudo systemctl stop $svc
     wait_port_free
     sudo dnf erase $version $extra -y
 done
+
+exit $rc

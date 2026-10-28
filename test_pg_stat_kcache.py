@@ -3,113 +3,37 @@
 """
 
 import os
-import re
-import subprocess
-import time
 
-import psycopg2
 import pytest
 
-PG_HOST = "localhost"
-PG_PORT = 5432
-PG_USER = "postgres"
-PG_DBNAME = "postgres"
+from pg_common import addon_pkg, find_in_pkg, require_preload, run
+
+ADDON_PKG = addon_pkg("pg_stat_kcache")
 
 
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
-def _detect():
-    try:
-        out = subprocess.check_output(
-            ["rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}\n"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        pytest.exit("rpm не найден")
-
-    for line in out.splitlines():
-        m = re.match(r"(postgresql(\d+)(st)?-server)\t(\d+\.\d+)", line)
-        if not m:
-            continue
-        pkg_name, major, suffix, pkg_ver = (
-            m.group(1),
-            m.group(2),
-            m.group(3) or "",
-            m.group(4),
-        )
-        for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
-            if run(["systemctl", "is-active", "--quiet", svc]).returncode == 0:
-                return {
-                    "pkg_name": pkg_name,
-                    "pkg_ver": pkg_ver,
-                    "major": major,
-                    "service": svc,
-                }
-
-    pytest.exit("активный postgresql*-server не найден")
-
-
-INFO = _detect()
-ADDON_PKG = INFO["pkg_name"][: -len("-server")] + "-pg_stat_kcache"
-
-
-def wait_pg(timeout=30):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            c = psycopg2.connect(
-                host=PG_HOST,
-                port=PG_PORT,
-                user=PG_USER,
-                dbname=PG_DBNAME,
-                connect_timeout=2,
-            )
-            c.close()
-            return True
-        except psycopg2.OperationalError:
-            time.sleep(1)
-    return False
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ensure_service():
-    r = run(["systemctl", "is-active", "--quiet", INFO["service"]])
-    assert r.returncode == 0, f"{INFO['service']} не запущен"
-    assert wait_pg(), "PostgreSQL не отвечает"
-
-
-@pytest.fixture(scope="session")
-def conn(ensure_service):
-    c = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME)
-    c.autocommit = True
-    yield c
-    c.close()
-
-
-@pytest.fixture(scope="session", autouse=True)
-def preload_ready(conn):
-    with conn.cursor() as cur:
-        cur.execute("SHOW shared_preload_libraries")
-        preload = cur.fetchone()[0]
-    missing = [
-        lib for lib in ("pg_stat_statements", "pg_stat_kcache") if lib not in preload
-    ]
-    if missing:
-        pytest.skip(
-            f"в shared_preload_libraries нет: {missing} - добавьте "
-            "'pg_stat_statements,pg_stat_kcache' и перезапустите сервер"
-        )
-
-
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def extension(conn):
+    require_preload(conn, "pg_stat_statements", "pg_stat_kcache")
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_kcache")
     yield conn
+
+
+def kcache_rows(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_stat_kcache()")
+        return cur.fetchone()[0]
+
+
+def run_distinct_queries(conn, n=10):
+    """n структурно разных запросов -> n разных queryid в статистике.
+    Константы и алиасы при расчёте queryid нормализуются, поэтому
+    меняем число колонок: SELECT 1 / SELECT 1, 1 / ..."""
+    with conn.cursor() as cur:
+        for i in range(n):
+            cur.execute("SELECT " + ", ".join(["1"] * (i + 1)))
+            cur.fetchall()
 
 
 class TestPackage:
@@ -120,11 +44,7 @@ class TestPackage:
         assert r.returncode == 0
 
     def test_control_file(self):
-        r = run(["rpm", "-ql", ADDON_PKG])
-        path = next(
-            (l for l in r.stdout.splitlines() if l.endswith("pg_stat_kcache.control")),
-            None,
-        )
+        path = find_in_pkg(ADDON_PKG, "pg_stat_kcache.control")
         print(f"\n  {path}")
         assert path and os.path.exists(path)
 
@@ -178,19 +98,20 @@ class TestFunctionality:
         assert not missing, f"нет колонок с суффиксами {missing}. Есть: {columns}"
 
     def test_view_has_data_after_query(self, extension):
-        with extension.cursor() as cur:
-            for _ in range(5):
-                cur.execute("SELECT count(*) FROM pg_class")
-                cur.fetchall()
-            cur.execute("SELECT count(*) FROM pg_stat_kcache()")
-            count = cur.fetchone()[0]
+        run_distinct_queries(extension, 5)
+        count = kcache_rows(extension)
         print(f"\n  строк: {count}")
         assert count > 0
 
     def test_reset_works(self, extension):
+        run_distinct_queries(extension, 10)
+        before = kcache_rows(extension)
+
         with extension.cursor() as cur:
             cur.execute("SELECT pg_stat_kcache_reset()")
-            cur.execute("SELECT count(*) FROM pg_stat_kcache()")
-            count = cur.fetchone()[0]
-        print(f"\n  строк после reset: {count}")
-        assert count == 0 or count >= 0
+        after = kcache_rows(extension)
+
+        # точный ноль не требуем: сам вызов reset тоже попадает в статистику
+        print(f"\n  строк до reset: {before}, после: {after}")
+        assert before >= 10, "статистика не накопилась - проверять reset не на чем"
+        assert after < before, "pg_stat_kcache_reset() не очистил статистику"

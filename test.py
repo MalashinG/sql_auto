@@ -4,106 +4,29 @@
 """
 
 import os
-import re
-import subprocess
-import time
 
-import psycopg2
 import pytest
 
+from pg_common import INFO, PG_DBNAME, PG_HOST, PG_PORT, PG_USER, new_conn, pg_bin, run
 
-def _detect() -> dict:
-    try:
-        out = subprocess.check_output(
-            ["rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}\n"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        pytest.exit(
-            "rpm не найден - тест рассчитан на RPM-based дистрибутив (ROSA Linux)"
-        )
 
-    for line in out.splitlines():
-        m = re.match(r"(postgresql(\d+)(st)?-server)\t(\d+\.\d+)", line)
-        if m:
-            pkg_name, major, suffix, pkg_ver = (
-                m.group(1),
-                m.group(2),
-                m.group(3) or "",
-                m.group(4),
-            )
-            for svc in [f"postgresql{major}", f"postgresql{major}{suffix}"]:
-                r = subprocess.run(
-                    ["systemctl", "is-active", "--quiet", svc], capture_output=True
-                )
-                if r.returncode == 0:
-                    return {
-                        "pkg_name": pkg_name,
-                        "pkg_ver": pkg_ver,
-                        "major": major,
-                        "service": svc,
-                        "bin_dir": f"/usr/libexec/postgresql{major}",
-                    }
-
-    pytest.exit(
-        "Пакет postgresql*-server не найден.\n"
-        "Установите пакет, например: dnf install postgresql(версия)-server"
+def psql(*args, dbname=PG_DBNAME):
+    return run(
+        [
+            pg_bin("psql"),
+            "-U",
+            PG_USER,
+            "-h",
+            PG_HOST,
+            "-p",
+            str(PG_PORT),
+            "-d",
+            dbname,
+            "-v",
+            "ON_ERROR_STOP=1",
+            *args,
+        ]
     )
-
-
-INFO = _detect()
-
-PG_HOST = "localhost"
-PG_PORT = 5432
-PG_USER = "postgres"
-PG_DBNAME = "postgres"
-
-
-def pg_bin(name: str) -> str:
-    for path in [os.path.join(INFO["bin_dir"], name), f"/usr/bin/{name}"]:
-        if os.path.exists(path):
-            return path
-    return name
-
-
-def run(cmd: list, **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
-def wait_for_postgres(timeout: int = 30) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            c = psycopg2.connect(
-                host=PG_HOST,
-                port=PG_PORT,
-                user=PG_USER,
-                dbname=PG_DBNAME,
-                connect_timeout=2,
-            )
-            c.close()
-            return True
-        except psycopg2.OperationalError:
-            time.sleep(1)
-    return False
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ensure_service():
-    r = run(["systemctl", "is-active", "--quiet", INFO["service"]])
-    assert (
-        r.returncode == 0
-    ), f"Сервис {INFO['service']} не запущен.\nЗапустите: sudo systemctl start {INFO['service']}"
-    assert wait_for_postgres(), "PostgreSQL не принимает соединения"
-
-
-@pytest.fixture(scope="session")
-def conn():
-    c = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME)
-    c.autocommit = True
-    yield c
-    c.close()
 
 
 @pytest.fixture()
@@ -168,32 +91,20 @@ class TestVersion:
             major_actual == major_expected
         ), f"Ожидали мажорную версию {major_expected}, а получили {major_actual}"
 
-    def test_datadir_initialized_by_this_version(self):
-        c = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME)
-        try:
-            with c.cursor() as cur:
-                cur.execute("SHOW data_directory")
-                data_dir = cur.fetchone()[0]
-        finally:
-            c.close()
-
-        r = run(["sudo", "-n", "-u", "postgres", "pg_controldata", data_dir])
+    def test_datadir_initialized_by_this_version(self, conn):
+        # PG_VERSION в корне datadir пишет initdb - это ровно мажорная версия,
+        # которой каталог был создан. pg_read_file доступен суперпользователю,
+        # путь относительный - от data_directory, поэтому sudo не нужен.
+        with conn.cursor() as cur:
+            cur.execute("SHOW data_directory")
+            data_dir = cur.fetchone()[0]
+            cur.execute("SELECT pg_read_file('PG_VERSION')")
+            datadir_ver = cur.fetchone()[0].strip()
         print(f"\n  data_directory = {data_dir}")
-        print("\n".join(r.stdout.splitlines()[:5]))
-        if r.returncode != 0:
-            print(f"  stderr: {r.stderr.strip()}")
-
-        if "a password is required" in r.stderr.lower() or "sudo:" in r.stderr.lower():
-            pytest.skip(
-                "sudo -u postgres без пароля недоступен. Добавьте в sudoers: "
-                "'<user> ALL=(postgres) NOPASSWD: /usr/bin/pg_controldata'"
-            )
-
-        assert r.returncode == 0, f"pg_controldata не смог прочитать {data_dir}"
+        print(f"  PG_VERSION = {datadir_ver}, ожидали {INFO['major']}")
         assert (
-            INFO["pkg_ver"].split(".")[0] in r.stdout
-            or "catalog version" in r.stdout.lower()
-        ), "pg_controldata не подтверждает версию - возможно datadir от предыдущей итерации"
+            datadir_ver == INFO["major"]
+        ), "datadir создан другой версией - возможно остался от предыдущей итерации"
 
 
 class TestService:
@@ -203,10 +114,17 @@ class TestService:
         print(f"\n   {INFO['service']}: {status}")
         assert status == "active"
 
-    def test_service_no_failures(self):
-        status = run(["systemctl", "status", INFO["service"]])
-        print("\n" + "\n".join(status.stdout.splitlines()[:5]))
-        assert "failed" not in status.stdout.lower()
+    def test_service_not_failed(self):
+        # is-failed возвращает 0, если юнит в состоянии failed
+        r = run(["systemctl", "is-failed", "--quiet", INFO["service"]])
+        print(f"\n  is-failed returncode = {r.returncode}")
+        assert r.returncode != 0, f"{INFO['service']} в состоянии failed"
+
+    def test_service_no_auto_restarts(self):
+        # NRestarts - сколько раз systemd сам перезапускал упавший сервис
+        r = run(["systemctl", "show", "-p", "NRestarts", "--value", INFO["service"]])
+        print(f"\n  NRestarts = {r.stdout.strip()}")
+        assert r.stdout.strip() in ("", "0"), "сервис падал и перезапускался systemd"
 
     def test_port_listening(self):
         result = run(["ss", "-tlnp", f"sport = :{PG_PORT}"])
@@ -285,9 +203,7 @@ class TestIndependentVerification:
                 ("independent_check", 777),
             )
 
-        fresh = psycopg2.connect(
-            host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=PG_DBNAME
-        )
+        fresh = new_conn()
         try:
             with fresh.cursor() as cur:
                 cur.execute(
@@ -307,20 +223,11 @@ class TestIndependentVerification:
                 ("psql_check", 555),
             )
 
-        r = run(
-            [
-                pg_bin("psql"),
-                "-U",
-                PG_USER,
-                "-h",
-                PG_HOST,
-                "-d",
-                PG_DBNAME,
-                "-t",
-                "-A",
-                "-c",
-                "SELECT name, value FROM _autotest WHERE name = 'psql_check'",
-            ]
+        r = psql(
+            "-t",
+            "-A",
+            "-c",
+            "SELECT name, value FROM _autotest WHERE name = 'psql_check'",
         )
         output = r.stdout.strip()
         print(f"\n  psql видит: '{output}'")
@@ -335,21 +242,7 @@ class TestIndependentVerification:
             cur.execute("SELECT COUNT(*) FROM _autotest")
             count_psycopg2 = cur.fetchone()[0]
 
-        r = run(
-            [
-                pg_bin("psql"),
-                "-U",
-                PG_USER,
-                "-h",
-                PG_HOST,
-                "-d",
-                PG_DBNAME,
-                "-t",
-                "-A",
-                "-c",
-                "SELECT COUNT(*) FROM _autotest",
-            ]
-        )
+        r = psql("-t", "-A", "-c", "SELECT COUNT(*) FROM _autotest")
         count_psql = int(r.stdout.strip())
 
         print(f"\n  psycopg2 COUNT(*) = {count_psycopg2}")
@@ -388,11 +281,19 @@ class TestExtensions:
 
 class TestDumpRestore:
 
-    DUMP_PATH = f"/tmp/_autotest_dump_{os.getpid()}.sql"
+    RESTORE_DB = "_autotest_restore"
 
-    def test_pg_dump_works(self, tmp_table):
-        if os.path.exists(self.DUMP_PATH):
-            os.remove(self.DUMP_PATH)
+    def test_dump_and_restore_roundtrip(self, tmp_table, tmp_path):
+        """pg_dump таблицы -> восстановление в новую БД -> данные совпадают."""
+        rows = [("alpha", 1), ("beta", 2), ("gamma", 3)]
+        with tmp_table.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO _autotest (name, value) VALUES (%s, %s)", rows
+            )
+
+        dump_path = tmp_path / "autotest_dump.sql"
+        # -t: только тестовая таблица - иначе в дамп попадут расширения
+        # из других тестов (pg_cron, например, нельзя создать в другой БД)
         r = run(
             [
                 pg_bin("pg_dump"),
@@ -400,21 +301,36 @@ class TestDumpRestore:
                 PG_USER,
                 "-h",
                 PG_HOST,
-                PG_DBNAME,
+                "-p",
+                str(PG_PORT),
+                "-t",
+                "_autotest",
                 "-f",
-                self.DUMP_PATH,
+                str(dump_path),
+                PG_DBNAME,
             ]
         )
-        print(f"\n  returncode: {r.returncode}")
-        if r.stderr:
-            print(f"  stderr: {r.stderr[:300]}")
+        print(f"\n  pg_dump returncode: {r.returncode}")
         assert r.returncode == 0, f"pg_dump упал: {r.stderr}"
-        assert os.path.exists(self.DUMP_PATH)
-        assert os.path.getsize(self.DUMP_PATH) > 0
+        assert dump_path.stat().st_size > 0
 
-    def test_dump_contains_test_table(self, tmp_table):
-        assert os.path.exists(self.DUMP_PATH), "Запустите test_pg_dump_works первым"
-        with open(self.DUMP_PATH, encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        print(f"\n  размер дампа: {len(content)} байт")
-        assert "_autotest" in content
+        with tmp_table.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {self.RESTORE_DB}")
+            cur.execute(f"CREATE DATABASE {self.RESTORE_DB}")
+        try:
+            r = psql("-q", "-f", str(dump_path), dbname=self.RESTORE_DB)
+            print(f"  restore returncode: {r.returncode}")
+            assert r.returncode == 0, f"восстановление упало: {r.stderr}"
+
+            restored = new_conn(dbname=self.RESTORE_DB)
+            try:
+                with restored.cursor() as cur:
+                    cur.execute("SELECT name, value FROM _autotest ORDER BY id")
+                    restored_rows = cur.fetchall()
+            finally:
+                restored.close()
+            print(f"  восстановлено: {restored_rows}")
+            assert restored_rows == rows
+        finally:
+            with tmp_table.cursor() as cur:
+                cur.execute(f"DROP DATABASE IF EXISTS {self.RESTORE_DB}")
