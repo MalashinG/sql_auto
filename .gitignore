@@ -3,3 +3,4 @@ __pycache__
 *.pyc
 .env
 pg_profile_reports
+reports
