@@ -103,11 +103,23 @@ class TestFunctionality:
         with sleeping_backend(2):
             time.sleep(1.5)
         before = profile_total(extension)
-
-        with extension.cursor() as cur:
-            cur.execute("SELECT pg_wait_sampling_reset_profile()")
-        after = profile_total(extension)
-
-        print(f"\n  сумма count в profile до reset: {before}, после: {after}")
         assert before > 0, "профиль пуст - collector не собирает данные"
+
+        # reset асинхронный: функция только ставит флаг запроса collector'у и
+        # сразу возвращается. Чтение профиля пишет в тот же флаг, поэтому если
+        # прочитать раньше, чем collector проснётся, запрос сброса теряется.
+        # Даём collector'у время и повторяем сброс, если он не применился.
+        after = before
+        for attempt in range(1, 6):
+            with extension.cursor() as cur:
+                cur.execute("SELECT pg_wait_sampling_reset_profile()")
+            time.sleep(0.5)
+            after = profile_total(extension)
+            if after < before:
+                break
+
+        print(
+            f"\n  сумма count в profile до reset: {before}, после: {after}"
+            f" (попытка {attempt})"
+        )
         assert after < before, "pg_wait_sampling_reset_profile() не очистил профиль"
